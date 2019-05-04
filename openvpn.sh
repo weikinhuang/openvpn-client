@@ -95,7 +95,7 @@ return_route6() { local network="$1" gw="$(ip -6 route |
     ip -6 route | grep -q "$network" ||
         ip -6 route add to $network via $gw dev eth0
     ip6tables -A OUTPUT --destination $network -j ACCEPT 2>/dev/null
-    [[ -e $route6 ]] &&grep -q "^$network\$" $route6 ||echo "$network" >>$route6
+    [[ -e $route6 ]] && grep -q "^$network\$" $route6 ||echo "$network" >>$route6
 }
 
 ### return_route: add a route back to your network, so that return traffic works
@@ -107,6 +107,23 @@ return_route() { local network="$1" gw="$(ip route |awk '/default/ {print $3}')"
         ip route add to $network via $gw dev eth0
     iptables -A OUTPUT --destination $network -j ACCEPT
     [[ -e $route ]] && grep -q "^$network\$" $route || echo "$network" >>$route
+}
+
+### output_iface: interfaces to allow outbound traffic to ex. docker0
+# Arguments:
+#   iface) a network interface
+# Return: configured iptables for device
+output_iface() { local iface="$1"
+    ip6tables -A OUTPUT -o "${iface}" -j ACCEPT 2>/dev/null
+    iptables -A OUTPUT -o "${iface}" -j ACCEPT
+}
+
+### output_route: route to allow outbound traffic to ex. 172.16.0.0/16
+# Arguments:
+#   network) a CIDR specified network range
+# Return: configured iptables for route
+output_route() { local network="$1"
+    iptables -A OUTPUT --destination $network -j ACCEPT
 }
 
 ### vpn: setup openvpn client
@@ -180,6 +197,12 @@ Options (fields in '[]' are optional, '<>' are required):
     -f '[port]' Firewall rules so that only the VPN and DNS are allowed to
                 send internet traffic (IE if VPN is down it's offline)
                 optional arg: [port] to use, instead of default
+    -i '<iface>' Interface to allow outbound traffic through
+                required arg: '<iface>'
+    -I '<network>' CIDR network (IE 172.16.0.1/16 docker net)
+                required arg: '<network>'
+                <network> add a firewall rule to (allows replies once the VPN
+                is up) without adding a return route
     -m '<mss>'  Maximum Segment Size <mss>
                 required arg: '<mss>'
     -p '<port>[;protocol]' Forward port <port>
@@ -210,7 +233,7 @@ conf="$dir/vpn.conf"
 cert="$dir/vpn-ca.crt"
 route="$dir/.firewall"
 route6="$dir/.firewall6"
-[[ -f $conf ]] || { [[ $(ls -d $dir/*|egrep '\.(conf|ovpn)$' 2>&-|wc -w) -eq 1 \
+[[ -f $conf ]] || { [[ $(ls -d $dir/* | egrep '\.(conf|ovpn)$' 2>&-|wc -w) -eq 1 \
             ]] && conf="$(ls -d $dir/* | egrep '\.(conf|ovpn)$' 2>&-)"; }
 [[ -f $cert ]] || { [[ $(ls -d $dir/* | egrep '\.ce?rt$' 2>&- | wc -w) -eq 1 \
             ]] && cert="$(ls -d $dir/* | egrep '\.ce?rt$' 2>&-)"; }
@@ -221,16 +244,20 @@ route6="$dir/.firewall6"
 [[ "${FIREWALL:-""}" || -e $route ]] && firewall "${FIREWALL:-""}"
 [[ "${ROUTE6:-""}" ]] && return_route6 "$ROUTE6"
 [[ "${ROUTE:-""}" ]] && return_route "$ROUTE"
+[[ "${OUTPUT_ROUTE:-""}" ]] && output_route "$OUTPUT_ROUTE"
+[[ "${OUTPUT_IFACE:-""}" ]] && output_iface "$OUTPUT_IFACE"
 [[ "${VPN:-""}" ]] && eval vpn $(sed 's/^/"/; s/$/"/; s/;/" "/g' <<< $VPN)
 [[ "${VPNPORT:-""}" ]] && eval vpnportforward $(sed 's/^/"/; s/$/"/; s/;/" "/g'\
             <<< $VPNPORT)
 
-while getopts ":hc:df:m:p:R:r:v:" opt; do
+while getopts ":hc:df:i:I:m:p:R:r:v:" opt; do
     case "$opt" in
         h) usage ;;
         c) cert_auth "$OPTARG" ;;
         d) dns ;;
         f) firewall "$OPTARG"; touch $route $route6 ;;
+        i) output_iface "$OPTARG" ;;
+        I) output_route "$OPTARG" ;;
         m) MSS="$OPTARG" ;;
         p) eval vpnportforward $(sed 's/^/"/; s/$/"/; s/;/" "/g' <<< $OPTARG) ;;
         R) return_route6 "$OPTARG" ;;
